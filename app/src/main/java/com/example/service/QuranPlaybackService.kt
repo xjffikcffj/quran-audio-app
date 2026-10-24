@@ -48,6 +48,8 @@ class QuranPlaybackService : MediaSessionService() {
         const val ACTION_PAUSE =
             "com.example.quranaudio.action.PAUSE"
 
+        private const val TIMER_MARKER = " • متبقي "
+
         @Volatile
         private var sharedPlayer: ExoPlayer? = null
 
@@ -232,7 +234,6 @@ class QuranPlaybackService : MediaSessionService() {
         mediaSession = session
         session.player.addListener(servicePlayerListener)
 
-        // تحديث إشعار التلاوة عند تغيّر الوقت المتبقي للمؤقت.
         notificationScope =
             CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -287,9 +288,50 @@ class QuranPlaybackService : MediaSessionService() {
         return START_STICKY
     }
 
+    /**
+     * Updates the artist metadata used by the media session notification
+     * so the remaining sleep-timer time can appear in the same notification.
+     */
+    private fun updateTimerMediaMetadata(player: ExoPlayer) {
+        val item = player.currentMediaItem ?: return
+        val index = player.currentMediaItemIndex
+
+        val currentArtist =
+            item.mediaMetadata.artist?.toString()
+                ?: "تلاوة القرآن الكريم"
+
+        val baseArtist = currentArtist.substringBefore(TIMER_MARKER)
+
+        val desiredArtist =
+            if (SleepTimerManager.isTimerActive.value) {
+                "$baseArtist$TIMER_MARKER${
+                    SleepTimerManager.formatTime(
+                        SleepTimerManager.remainingSeconds.value
+                    )
+                }"
+            } else {
+                baseArtist
+            }
+
+        if (desiredArtist != currentArtist) {
+            val updatedMetadata = item.mediaMetadata
+                .buildUpon()
+                .setArtist(desiredArtist)
+                .build()
+
+            val updatedItem = item.buildUpon()
+                .setMediaMetadata(updatedMetadata)
+                .build()
+
+            player.replaceMediaItem(index, updatedItem)
+        }
+    }
+
     private fun updateCurrentNotification() {
         try {
             val player = sharedPlayer ?: return
+
+            updateTimerMediaMetadata(player)
 
             val title = player.currentMediaItem
                 ?.mediaMetadata
@@ -302,16 +344,6 @@ class QuranPlaybackService : MediaSessionService() {
                 ?.artist
                 ?.toString()
                 ?: "تلاوة القرآن الكريم"
-
-            val timerActive = SleepTimerManager.isTimerActive.value
-            val remainingSeconds =
-                SleepTimerManager.remainingSeconds.value
-
-            val contentText = if (timerActive) {
-                "$artist • متبقي ${SleepTimerManager.formatTime(remainingSeconds)}"
-            } else {
-                artist
-            }
 
             val shouldShowPause =
                 player.playWhenReady &&
@@ -354,7 +386,7 @@ class QuranPlaybackService : MediaSessionService() {
                 QuranApp.PLAYBACK_CHANNEL_ID
             )
                 .setContentTitle(title)
-                .setContentText(contentText)
+                .setContentText(artist)
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setContentIntent(pendingIntent)
                 .setOngoing(shouldShowPause)
@@ -375,7 +407,6 @@ class QuranPlaybackService : MediaSessionService() {
                     actionPendingIntent
                 )
 
-            // إبقاء عناصر التحكم بالوسائط على شاشة القفل.
             mediaSession?.let { session ->
                 builder.setStyle(
                     MediaStyleNotificationHelper.MediaStyle(session)
@@ -398,7 +429,6 @@ class QuranPlaybackService : MediaSessionService() {
 
                 isForegroundStarted = true
             } else {
-                // تحديث الإشعار الموجود دون إعادة تشغيل وضع المقدمة كل ثانية.
                 NotificationManagerCompat.from(this)
                     .notify(NOTIFICATION_ID, notification)
             }
