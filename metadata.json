@@ -1,0 +1,6 @@
+{
+  "name": "Quran Audio – قرآن صوتي",
+  "description": "تطبيق احترافي لتشغيل القرآن الكريم صوتياً لكبار القراء مع واجهة عربية فاخرة ودعم التشغيل في الخلفية وبحث سريع لكافة السور الـ114.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
