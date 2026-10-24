@@ -1,3 +1,4 @@
+
 package com.example.timer
 
 import android.content.Context
@@ -6,25 +7,25 @@ import com.example.service.QuranPlaybackService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
 import java.util.Locale
 
-/**
- * Singleton SleepTimerManager that manages countdown timing independently of Activity lifecycle.
- * Automatically pauses the background ExoPlayer when the countdown reaches zero.
- */
 object SleepTimerManager {
     private const val TAG = "SleepTimerManager"
 
-    private val scope = CoroutineScope(Dispatchers.Main)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var timerJob: Job? = null
-
-    private var targetEndTimeMs: Long = 0L
+    private var remainingTimeMs = 0L
+    private var timerStartedAtMs = 0L
+    private var timerPaused = false
+    private var appContext: Context? = null
 
     private val _isTimerActive = MutableStateFlow(false)
     val isTimerActive: StateFlow<Boolean> = _isTimerActive.asStateFlow()
@@ -38,57 +39,110 @@ object SleepTimerManager {
         return String.format(Locale.US, "%02d:%02d", minutes, seconds)
     }
 
-    /**
-     * Starts sleep timer for specified minutes (e.g., 5, 10, 15, 30, 45, 60).
-     */
     fun startTimer(context: Context, minutes: Int) {
-        val seconds = minutes * 60L
-        startTimerWithSeconds(context, seconds)
+        startTimerWithSeconds(context, minutes.coerceAtLeast(0) * 60L)
     }
 
-    /**
-     * Starts sleep timer with exact seconds (useful for custom periods or quick tests).
-     */
     fun startTimerWithSeconds(context: Context, seconds: Long) {
         cancelTimer()
-        targetEndTimeMs = System.currentTimeMillis() + (seconds * 1000L)
+
+        if (seconds <= 0L) return
+
+        appContext = context.applicationContext
+        remainingTimeMs = seconds * 1000L
+        timerStartedAtMs = System.currentTimeMillis()
+        timerPaused = try {
+            !QuranPlaybackService.getSharedPlayer(appContext!!).playWhenReady
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not read playback state: ${e.message}")
+            false
+        }
+
         _isTimerActive.value = true
         _remainingSeconds.value = seconds
-        Log.i(TAG, "[SleepTimer] Started timer for $seconds seconds ($targetEndTimeMs)")
+
+        Log.i(TAG, "Sleep timer started: $seconds seconds; paused=$timerPaused")
+
+        if (!timerPaused) startCountdown()
+    }
+
+    fun pauseTimer() {
+        if (!_isTimerActive.value || timerPaused) return
+
+        val elapsed = System.currentTimeMillis() - timerStartedAtMs
+        remainingTimeMs = (remainingTimeMs - elapsed).coerceAtLeast(0L)
+        _remainingSeconds.value = (remainingTimeMs + 999L) / 1000L
+        timerPaused = true
+
+        timerJob?.cancel()
+        timerJob = null
+
+        Log.i(TAG, "Sleep timer paused with ${_remainingSeconds.value} seconds remaining")
+    }
+
+    fun resumeTimer() {
+        if (!_isTimerActive.value || !timerPaused) return
+
+        if (remainingTimeMs <= 0L) {
+            finishTimer()
+            return
+        }
+
+        timerPaused = false
+        timerStartedAtMs = System.currentTimeMillis()
+
+        Log.i(TAG, "Sleep timer resumed")
+        startCountdown()
+    }
+
+    private fun startCountdown() {
+        timerJob?.cancel()
+        timerStartedAtMs = System.currentTimeMillis()
 
         timerJob = scope.launch {
-            while (isActive) {
-                val now = System.currentTimeMillis()
-                val diffMs = targetEndTimeMs - now
-                val remainingSec = (diffMs / 1000L).coerceAtLeast(0L)
-                _remainingSeconds.value = remainingSec
+            while (isActive && _isTimerActive.value && !timerPaused) {
+                val elapsed = System.currentTimeMillis() - timerStartedAtMs
+                val remaining = (remainingTimeMs - elapsed).coerceAtLeast(0L)
 
-                if (remainingSec <= 0L) {
-                    Log.i(TAG, "[SleepTimer] Countdown finished. Pausing background recitation.")
-                    try {
-                        val player = QuranPlaybackService.getSharedPlayer(context)
-                        player.pause()
-                    } catch (e: Exception) {
-                        Log.e(TAG, "[SleepTimer] Failed to pause player on timeout: ${e.message}", e)
-                    }
-                    cancelTimer()
+                _remainingSeconds.value = (remaining + 999L) / 1000L
+
+                if (remaining <= 0L) {
+                    finishTimer()
                     break
                 }
-                delay(1000L)
+
+                delay(minOf(1000L, remaining))
             }
         }
     }
 
-    /**
-     * Cancels the active sleep timer.
-     */
+    private fun finishTimer() {
+        if (!_isTimerActive.value) return
+
+        Log.i(TAG, "Sleep timer finished; pausing Quran playback")
+
+        try {
+            appContext?.let { context ->
+                QuranPlaybackService.getSharedPlayer(context).pause()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to pause playback: ${e.message}", e)
+        }
+
+        cancelTimer()
+    }
+
     fun cancelTimer() {
         if (_isTimerActive.value) {
-            Log.i(TAG, "[SleepTimer] Sleep timer cancelled by user.")
+            Log.i(TAG, "Sleep timer cancelled")
         }
+
         timerJob?.cancel()
         timerJob = null
-        targetEndTimeMs = 0L
+        remainingTimeMs = 0L
+        timerStartedAtMs = 0L
+        timerPaused = false
+        appContext = null
         _isTimerActive.value = false
         _remainingSeconds.value = 0L
     }
