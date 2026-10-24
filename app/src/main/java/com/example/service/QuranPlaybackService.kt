@@ -8,6 +8,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -21,11 +22,21 @@ import androidx.media3.session.MediaStyleNotificationHelper
 import com.example.MainActivity
 import com.example.QuranApp
 import com.example.R
+import com.example.timer.SleepTimerManager
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
 
 @UnstableApi
 class QuranPlaybackService : MediaSessionService() {
 
     private var mediaSession: MediaSession? = null
+    private var notificationScope: CoroutineScope? = null
+    private var isForegroundStarted = false
 
     companion object {
         const val TAG = "QuranPlaybackService"
@@ -159,6 +170,12 @@ class QuranPlaybackService : MediaSessionService() {
                         "$playWhenReady"
                 )
 
+                if (playWhenReady) {
+                    SleepTimerManager.resumeTimer()
+                } else {
+                    SleepTimerManager.pauseTimer()
+                }
+
                 updateCurrentNotification()
             }
 
@@ -214,6 +231,23 @@ class QuranPlaybackService : MediaSessionService() {
         val session = getSharedSession(this)
         mediaSession = session
         session.player.addListener(servicePlayerListener)
+
+        // تحديث إشعار التلاوة عند تغيّر الوقت المتبقي للمؤقت.
+        notificationScope =
+            CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+        notificationScope?.launch {
+            combine(
+                SleepTimerManager.isTimerActive,
+                SleepTimerManager.remainingSeconds
+            ) { isActive, seconds ->
+                isActive to seconds
+            }
+                .distinctUntilChanged()
+                .collect {
+                    updateCurrentNotification()
+                }
+        }
     }
 
     override fun onStartCommand(
@@ -269,6 +303,16 @@ class QuranPlaybackService : MediaSessionService() {
                 ?.toString()
                 ?: "تلاوة القرآن الكريم"
 
+            val timerActive = SleepTimerManager.isTimerActive.value
+            val remainingSeconds =
+                SleepTimerManager.remainingSeconds.value
+
+            val contentText = if (timerActive) {
+                "$artist • متبقي ${SleepTimerManager.formatTime(remainingSeconds)}"
+            } else {
+                artist
+            }
+
             val shouldShowPause =
                 player.playWhenReady &&
                     player.playbackState != Player.STATE_ENDED
@@ -310,7 +354,7 @@ class QuranPlaybackService : MediaSessionService() {
                 QuranApp.PLAYBACK_CHANNEL_ID
             )
                 .setContentTitle(title)
-                .setContentText(artist)
+                .setContentText(contentText)
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setContentIntent(pendingIntent)
                 .setOngoing(shouldShowPause)
@@ -331,7 +375,7 @@ class QuranPlaybackService : MediaSessionService() {
                     actionPendingIntent
                 )
 
-            // ربط الإشعار بجلسة الوسائط لدعم عرض التحكم على شاشة القفل.
+            // إبقاء عناصر التحكم بالوسائط على شاشة القفل.
             mediaSession?.let { session ->
                 builder.setStyle(
                     MediaStyleNotificationHelper.MediaStyle(session)
@@ -341,17 +385,22 @@ class QuranPlaybackService : MediaSessionService() {
 
             val notification = builder.build()
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(
-                    NOTIFICATION_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-                )
+            if (!isForegroundStarted) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    startForeground(
+                        NOTIFICATION_ID,
+                        notification,
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                    )
+                } else {
+                    startForeground(NOTIFICATION_ID, notification)
+                }
+
+                isForegroundStarted = true
             } else {
-                startForeground(
-                    NOTIFICATION_ID,
-                    notification
-                )
+                // تحديث الإشعار الموجود دون إعادة تشغيل وضع المقدمة كل ثانية.
+                NotificationManagerCompat.from(this)
+                    .notify(NOTIFICATION_ID, notification)
             }
         } catch (e: Exception) {
             Log.w(
@@ -394,6 +443,9 @@ class QuranPlaybackService : MediaSessionService() {
 
     override fun onDestroy() {
         Log.i(TAG, "QuranPlaybackService onDestroy")
+
+        notificationScope?.cancel()
+        notificationScope = null
 
         sharedPlayer?.removeListener(servicePlayerListener)
         mediaSession = null
