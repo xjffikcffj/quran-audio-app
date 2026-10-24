@@ -1,24 +1,21 @@
 
 package com.example.service
 
-import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ServiceInfo
-import android.os.Build
+import android.app.PendingIntent
 import android.util.Log
-import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
-import androidx.media3.session.MediaStyleNotificationHelper
 import com.example.MainActivity
 import com.example.QuranApp
 import com.example.R
@@ -36,7 +33,6 @@ class QuranPlaybackService : MediaSessionService() {
 
     private var mediaSession: MediaSession? = null
     private var notificationScope: CoroutineScope? = null
-    private var isForegroundStarted = false
 
     companion object {
         const val TAG = "QuranPlaybackService"
@@ -136,6 +132,59 @@ class QuranPlaybackService : MediaSessionService() {
         }
     }
 
+    /*
+     * The provider builds the media notification.
+     * The timer text is calculated when the notification is rebuilt,
+     * without replacing the current media item.
+     */
+    private val timerNotificationProvider:
+        DefaultMediaNotificationProvider by lazy {
+
+        object : DefaultMediaNotificationProvider(
+            this,
+            DefaultMediaNotificationProvider.NotificationIdProvider {
+                NOTIFICATION_ID
+            },
+            QuranApp.PLAYBACK_CHANNEL_ID,
+            R.string.app_name
+        ) {
+
+            override fun getNotificationContentText(
+                metadata: MediaMetadata
+            ): CharSequence? {
+
+                val artist = metadata.artist
+                    ?.toString()
+                    ?.substringBefore(TIMER_MARKER)
+                    ?.takeIf { it.isNotBlank() }
+                    ?: "تلاوة القرآن الكريم"
+
+                return if (SleepTimerManager.isTimerActive.value) {
+                    artist + TIMER_MARKER +
+                        SleepTimerManager.formatTime(
+                            SleepTimerManager.remainingSeconds.value
+                        )
+                } else {
+                    artist
+                }
+            }
+        }.apply {
+            setSmallIcon(R.mipmap.ic_launcher)
+        }
+    }
+
+    private fun requestNotificationUpdate() {
+        try {
+            triggerNotificationUpdate()
+        } catch (e: Exception) {
+            Log.w(
+                TAG,
+                "Notification update skipped: ${e.message}",
+                e
+            )
+        }
+    }
+
     private val servicePlayerListener =
         object : Player.Listener {
 
@@ -159,7 +208,7 @@ class QuranPlaybackService : MediaSessionService() {
                     Log.i(TAG, "[PlaybackDiagnostics] Playback ended")
                 }
 
-                updateCurrentNotification()
+                requestNotificationUpdate()
             }
 
             override fun onPlayWhenReadyChanged(
@@ -178,7 +227,7 @@ class QuranPlaybackService : MediaSessionService() {
                     SleepTimerManager.pauseTimer()
                 }
 
-                updateCurrentNotification()
+                requestNotificationUpdate()
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -187,7 +236,7 @@ class QuranPlaybackService : MediaSessionService() {
                     "[PlaybackDiagnostics] isPlaying changed: $isPlaying"
                 )
 
-                updateCurrentNotification()
+                requestNotificationUpdate()
             }
 
             override fun onMediaItemTransition(
@@ -206,7 +255,7 @@ class QuranPlaybackService : MediaSessionService() {
                         "$title (reason=$reason)"
                 )
 
-                updateCurrentNotification()
+                requestNotificationUpdate()
             }
 
             override fun onPlayerError(error: PlaybackException) {
@@ -230,6 +279,9 @@ class QuranPlaybackService : MediaSessionService() {
 
         Log.i(TAG, "QuranPlaybackService onCreate")
 
+        // Use Media3's notification manager and our custom timer text.
+        setMediaNotificationProvider(timerNotificationProvider)
+
         val session = getSharedSession(this)
         mediaSession = session
         session.player.addListener(servicePlayerListener)
@@ -246,7 +298,7 @@ class QuranPlaybackService : MediaSessionService() {
             }
                 .distinctUntilChanged()
                 .collect {
-                    updateCurrentNotification()
+                    requestNotificationUpdate()
                 }
         }
     }
@@ -273,172 +325,19 @@ class QuranPlaybackService : MediaSessionService() {
                     player.play()
                 }
 
-                updateCurrentNotification()
+                requestNotificationUpdate()
                 return START_STICKY
             }
 
             ACTION_PAUSE -> {
                 player?.pause()
-                updateCurrentNotification()
+                requestNotificationUpdate()
                 return START_STICKY
             }
         }
 
-        updateCurrentNotification()
+        requestNotificationUpdate()
         return START_STICKY
-    }
-
-    /**
-     * Updates the artist metadata used by the media session notification
-     * so the remaining sleep-timer time can appear in the same notification.
-     */
-    private fun updateTimerMediaMetadata(player: ExoPlayer) {
-        val item = player.currentMediaItem ?: return
-        val index = player.currentMediaItemIndex
-
-        val currentArtist =
-            item.mediaMetadata.artist?.toString()
-                ?: "تلاوة القرآن الكريم"
-
-        val baseArtist = currentArtist.substringBefore(TIMER_MARKER)
-
-        val desiredArtist =
-            if (SleepTimerManager.isTimerActive.value) {
-                "$baseArtist$TIMER_MARKER${
-                    SleepTimerManager.formatTime(
-                        SleepTimerManager.remainingSeconds.value
-                    )
-                }"
-            } else {
-                baseArtist
-            }
-
-        if (desiredArtist != currentArtist) {
-            val updatedMetadata = item.mediaMetadata
-                .buildUpon()
-                .setArtist(desiredArtist)
-                .build()
-
-            val updatedItem = item.buildUpon()
-                .setMediaMetadata(updatedMetadata)
-                .build()
-
-            player.replaceMediaItem(index, updatedItem)
-        }
-    }
-
-    private fun updateCurrentNotification() {
-        try {
-            val player = sharedPlayer ?: return
-
-            updateTimerMediaMetadata(player)
-
-            val title = player.currentMediaItem
-                ?.mediaMetadata
-                ?.title
-                ?.toString()
-                ?: getString(R.string.app_name)
-
-            val artist = player.currentMediaItem
-                ?.mediaMetadata
-                ?.artist
-                ?.toString()
-                ?: "تلاوة القرآن الكريم"
-
-            val shouldShowPause =
-                player.playWhenReady &&
-                    player.playbackState != Player.STATE_ENDED
-
-            val sessionActivityIntent =
-                Intent(this, MainActivity::class.java).apply {
-                    flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
-                }
-
-            val pendingIntent = PendingIntent.getActivity(
-                this,
-                0,
-                sessionActivityIntent,
-                PendingIntent.FLAG_IMMUTABLE or
-                    PendingIntent.FLAG_UPDATE_CURRENT
-            )
-
-            val actionIntent = Intent(
-                this,
-                QuranPlaybackService::class.java
-            ).apply {
-                action = if (shouldShowPause) {
-                    ACTION_PAUSE
-                } else {
-                    ACTION_PLAY
-                }
-            }
-
-            val actionPendingIntent = PendingIntent.getService(
-                this,
-                if (shouldShowPause) 1 else 2,
-                actionIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or
-                    PendingIntent.FLAG_IMMUTABLE
-            )
-
-            val builder = NotificationCompat.Builder(
-                this,
-                QuranApp.PLAYBACK_CHANNEL_ID
-            )
-                .setContentTitle(title)
-                .setContentText(artist)
-                .setSmallIcon(R.mipmap.ic_launcher)
-                .setContentIntent(pendingIntent)
-                .setOngoing(shouldShowPause)
-                .setPriority(NotificationCompat.PRIORITY_LOW)
-                .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
-                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-                .addAction(
-                    if (shouldShowPause) {
-                        android.R.drawable.ic_media_pause
-                    } else {
-                        android.R.drawable.ic_media_play
-                    },
-                    if (shouldShowPause) {
-                        "إيقاف مؤقت"
-                    } else {
-                        "تشغيل"
-                    },
-                    actionPendingIntent
-                )
-
-            mediaSession?.let { session ->
-                builder.setStyle(
-                    MediaStyleNotificationHelper.MediaStyle(session)
-                        .setShowActionsInCompactView(0)
-                )
-            }
-
-            val notification = builder.build()
-
-            if (!isForegroundStarted) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    startForeground(
-                        NOTIFICATION_ID,
-                        notification,
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-                    )
-                } else {
-                    startForeground(NOTIFICATION_ID, notification)
-                }
-
-                isForegroundStarted = true
-            } else {
-                NotificationManagerCompat.from(this)
-                    .notify(NOTIFICATION_ID, notification)
-            }
-        } catch (e: Exception) {
-            Log.w(
-                TAG,
-                "Notification update skipped: ${e.message}",
-                e
-            )
-        }
     }
 
     override fun onGetSession(
