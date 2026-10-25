@@ -70,27 +70,58 @@ class AudioPlayerViewModel(
         private const val KEY_POSITION = "last_position_ms"
         private const val KEY_SPEED = "last_playback_speed"
         private const val KEY_REPEAT = "last_repeat_one"
+        private const val SURAH_POSITION_PREFIX = "surah_position_"
         private const val SAVE_INTERVAL_MS = 2000L
     }
 
     private val preferences =
-        application.getSharedPreferences(PREFS_NAME, Application.MODE_PRIVATE)
+        application.getSharedPreferences(
+            PREFS_NAME,
+            Application.MODE_PRIVATE
+        )
 
     private val _uiState = MutableStateFlow(
         AudioPlayerUiState(
             currentSurah = getSavedSurah(),
             currentReciter = getSavedReciter(),
-            currentPositionMs = preferences.getLong(KEY_POSITION, 0L),
+            currentPositionMs = getSavedPositionForSurah(
+                getSavedSurah().number
+            ),
             playbackSpeed = getSavedSpeed(),
             isRepeatOne = preferences.getBoolean(KEY_REPEAT, false)
         )
     )
 
-    val uiState: StateFlow<AudioPlayerUiState> = _uiState.asStateFlow()
+    val uiState: StateFlow<AudioPlayerUiState> =
+        _uiState.asStateFlow()
 
     private var exoPlayer: ExoPlayer? = null
     private var mediaSession: MediaSession? = null
     private var progressJob: Job? = null
+
+    private fun positionKey(surahNumber: Int): String =
+        "$SURAH_POSITION_PREFIX$surahNumber"
+
+    private fun getSavedPositionForSurah(
+        surahNumber: Int
+    ): Long {
+        val key = positionKey(surahNumber)
+
+        return if (preferences.contains(key)) {
+            preferences.getLong(key, 0L).coerceAtLeast(0L)
+        } else {
+            // Migrate the old saved position for the last Surah.
+            val oldSurahNumber =
+                preferences.getInt(KEY_SURAH_NUMBER, 1)
+
+            if (oldSurahNumber == surahNumber) {
+                preferences.getLong(KEY_POSITION, 0L)
+                    .coerceAtLeast(0L)
+            } else {
+                0L
+            }
+        }
+    }
 
     private val playerListener = object : Player.Listener {
 
@@ -118,6 +149,7 @@ class AudioPlayerViewModel(
 
                 Player.STATE_READY -> {
                     val playing = exoPlayer?.isPlaying == true
+
                     _uiState.update {
                         it.copy(
                             playbackStatus = if (playing) {
@@ -132,6 +164,7 @@ class AudioPlayerViewModel(
                             errorMessage = null
                         )
                     }
+
                     savePlaybackState()
                 }
 
@@ -156,6 +189,7 @@ class AudioPlayerViewModel(
                             isPlaying = false
                         )
                     }
+
                     savePlaybackState()
                 }
             }
@@ -167,7 +201,9 @@ class AudioPlayerViewModel(
                     isPlaying = isPlaying,
                     playbackStatus = if (isPlaying) {
                         PlaybackStatus.PLAYING
-                    } else if (it.playbackStatus == PlaybackStatus.BUFFERING) {
+                    } else if (
+                        it.playbackStatus == PlaybackStatus.BUFFERING
+                    ) {
                         PlaybackStatus.BUFFERING
                     } else {
                         PlaybackStatus.PAUSED
@@ -196,17 +232,22 @@ class AudioPlayerViewModel(
             reason: Int
         ) {
             val number = mediaItem?.mediaId?.toIntOrNull() ?: return
+
             val surah = QuranData.surahs.firstOrNull {
                 it.number == number
             } ?: return
 
+            val position =
+                exoPlayer?.currentPosition?.coerceAtLeast(0L) ?: 0L
+
             _uiState.update {
                 it.copy(
                     currentSurah = surah,
-                    currentPositionMs = 0L
+                    currentPositionMs = position
                 )
             }
-            savePlaybackState()
+
+            savePlaybackState(positionOverride = position)
         }
 
         override fun onPlayerError(error: PlaybackException) {
@@ -237,6 +278,7 @@ class AudioPlayerViewModel(
 
     private fun getSavedSurah(): Surah {
         val number = preferences.getInt(KEY_SURAH_NUMBER, 1)
+
         return QuranData.surahs.firstOrNull {
             it.number == number
         } ?: QuranData.surahs.first()
@@ -244,6 +286,7 @@ class AudioPlayerViewModel(
 
     private fun getSavedReciter(): Reciter {
         val savedId = preferences.getString(KEY_RECITER_ID, null)
+
         return QuranData.reciters.firstOrNull {
             it.id.toString() == savedId
         } ?: QuranData.reciters.first()
@@ -251,7 +294,12 @@ class AudioPlayerViewModel(
 
     private fun getSavedSpeed(): Float {
         val speed = preferences.getFloat(KEY_SPEED, 1.0f)
-        return if (speed in 0.25f..3.0f) speed else 1.0f
+
+        return if (speed in 0.25f..3.0f) {
+            speed
+        } else {
+            1.0f
+        }
     }
 
     private fun initializeExoPlayer() {
@@ -260,17 +308,15 @@ class AudioPlayerViewModel(
         Log.i(TAG, "Initializing shared Quran player")
 
         val player = QuranPlaybackService.getSharedPlayer(context)
+
         exoPlayer = player
         mediaSession = QuranPlaybackService.getSharedSession(context)
 
         player.addListener(playerListener)
 
-        // Apply the saved playback speed without starting playback.
         player.playbackParameters =
             PlaybackParameters(_uiState.value.playbackSpeed)
 
-        // If the player already has a media item, keep it.
-        // Otherwise restore the previously saved item in a paused state.
         if (player.currentMediaItem != null) {
             syncWithActivePlayer(player)
         } else {
@@ -286,8 +332,8 @@ class AudioPlayerViewModel(
             ?.takeIf { it.isNotBlank() }
             ?: surah.audioUrl
 
-        val savedPosition = preferences.getLong(KEY_POSITION, 0L)
-            .coerceAtLeast(0L)
+        val savedPosition =
+            getSavedPositionForSurah(surah.number)
 
         val metadata = MediaMetadata.Builder()
             .setTitle("سورة ${surah.nameArabic}")
@@ -304,9 +350,9 @@ class AudioPlayerViewModel(
             .build()
 
         try {
-            // Set the saved item and position, but do not call play().
             player.setMediaItem(mediaItem, savedPosition)
             player.prepare()
+
             player.playbackParameters =
                 PlaybackParameters(_uiState.value.playbackSpeed)
 
@@ -328,6 +374,7 @@ class AudioPlayerViewModel(
             )
         } catch (e: Exception) {
             Log.e(TAG, "Could not restore saved playback", e)
+
             _uiState.update {
                 it.copy(
                     playbackStatus = PlaybackStatus.ERROR,
@@ -355,16 +402,21 @@ class AudioPlayerViewModel(
                 currentSurah = matchingSurah,
                 currentReciter = savedReciter,
                 isPlaying = playing,
-                isBuffering = player.playbackState == Player.STATE_BUFFERING,
+                isBuffering =
+                    player.playbackState == Player.STATE_BUFFERING,
                 playbackStatus = when {
                     playing -> PlaybackStatus.PLAYING
+
                     player.playbackState == Player.STATE_BUFFERING ->
                         PlaybackStatus.BUFFERING
+
                     player.playbackState == Player.STATE_READY ->
                         PlaybackStatus.PAUSED
+
                     else -> PlaybackStatus.IDLE
                 },
-                currentPositionMs = player.currentPosition.coerceAtLeast(0L),
+                currentPositionMs =
+                    player.currentPosition.coerceAtLeast(0L),
                 durationMs = player.duration.coerceAtLeast(0L),
                 playbackSpeed = player.playbackParameters.speed
             )
@@ -374,7 +426,9 @@ class AudioPlayerViewModel(
             startProgressPolling()
         }
 
-        savePlaybackState()
+        savePlaybackState(
+            positionOverride = player.currentPosition.coerceAtLeast(0L)
+        )
     }
 
     private fun savePlaybackState(
@@ -385,7 +439,8 @@ class AudioPlayerViewModel(
         val player = exoPlayer
 
         val actualUrl = audioUrlOverride
-            ?: player?.currentMediaItem?.localConfiguration?.uri?.toString()
+            ?: player?.currentMediaItem
+                ?.localConfiguration?.uri?.toString()
             ?: preferences.getString(KEY_AUDIO_URL, null)
             ?: state.currentSurah.audioUrl
 
@@ -395,9 +450,16 @@ class AudioPlayerViewModel(
 
         preferences.edit()
             .putInt(KEY_SURAH_NUMBER, state.currentSurah.number)
-            .putString(KEY_RECITER_ID, state.currentReciter.id.toString())
+            .putString(
+                KEY_RECITER_ID,
+                state.currentReciter.id.toString()
+            )
             .putString(KEY_AUDIO_URL, actualUrl)
             .putLong(KEY_POSITION, position)
+            .putLong(
+                positionKey(state.currentSurah.number),
+                position
+            )
             .putFloat(KEY_SPEED, state.playbackSpeed)
             .putBoolean(KEY_REPEAT, state.isRepeatOne)
             .apply()
@@ -405,6 +467,11 @@ class AudioPlayerViewModel(
 
     fun playSurah(surah: Surah, reciter: Reciter? = null) {
         val context = getApplication<Application>()
+        val player = exoPlayer ?: return
+
+        // Save the previous Surah's position before switching.
+        savePlaybackState()
+
         val targetReciter = reciter ?: _uiState.value.currentReciter
 
         val audioUrl = if (reciter != null) {
@@ -413,13 +480,17 @@ class AudioPlayerViewModel(
             surah.audioUrl
         }
 
+        val startPosition =
+            getSavedPositionForSurah(surah.number)
+
         Log.i(
             TAG,
-            "Playing ${surah.nameArabic} via ${targetReciter.nameArabic}"
+            "Playing ${surah.nameArabic} via ${targetReciter.nameArabic} from $startPosition ms"
         )
 
         try {
-            val serviceIntent = Intent(context, QuranPlaybackService::class.java)
+            val serviceIntent =
+                Intent(context, QuranPlaybackService::class.java)
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(serviceIntent)
@@ -427,25 +498,23 @@ class AudioPlayerViewModel(
                 context.startService(serviceIntent)
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Could not start playback service: ${e.message}")
+            Log.w(
+                TAG,
+                "Could not start playback service: ${e.message}"
+            )
         }
 
         _uiState.update {
             it.copy(
                 currentSurah = surah,
                 currentReciter = targetReciter,
-                currentPositionMs = 0L,
+                currentPositionMs = startPosition,
                 playbackStatus = PlaybackStatus.BUFFERING,
                 isBuffering = true,
+                isPlaying = false,
                 errorMessage = null
             )
         }
-
-        // Save the selected surah immediately.
-        savePlaybackState(
-            audioUrlOverride = audioUrl,
-            positionOverride = 0L
-        )
 
         val metadata = MediaMetadata.Builder()
             .setTitle("سورة ${surah.nameArabic}")
@@ -461,29 +530,36 @@ class AudioPlayerViewModel(
             .setMediaMetadata(metadata)
             .build()
 
-        exoPlayer?.let { player ->
-            try {
-                player.setMediaItem(mediaItem)
-                player.prepare()
-                player.playbackParameters =
-                    PlaybackParameters(_uiState.value.playbackSpeed)
-                player.play()
-            } catch (e: Exception) {
-                Log.e(TAG, "Could not play surah", e)
-                _uiState.update {
-                    it.copy(
-                        playbackStatus = PlaybackStatus.ERROR,
-                        isPlaying = false,
-                        isBuffering = false,
-                        errorMessage =
-                            "تعذر تشغيل التلاوة. يرجى التأكد من الاتصال بالإنترنت."
-                    )
-                }
-                savePlaybackState(
-                    audioUrlOverride = audioUrl,
-                    positionOverride = 0L
+        try {
+            player.setMediaItem(mediaItem, startPosition)
+            player.prepare()
+
+            player.playbackParameters =
+                PlaybackParameters(_uiState.value.playbackSpeed)
+
+            player.play()
+
+            savePlaybackState(
+                audioUrlOverride = audioUrl,
+                positionOverride = startPosition
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Could not play surah", e)
+
+            _uiState.update {
+                it.copy(
+                    playbackStatus = PlaybackStatus.ERROR,
+                    isPlaying = false,
+                    isBuffering = false,
+                    errorMessage =
+                        "تعذر تشغيل التلاوة. يرجى التأكد من الاتصال بالإنترنت."
                 )
             }
+
+            savePlaybackState(
+                audioUrlOverride = audioUrl,
+                positionOverride = startPosition
+            )
         }
     }
 
@@ -499,7 +575,6 @@ class AudioPlayerViewModel(
                     _uiState.value.currentReciter
                 )
             } else {
-                // Resume the restored item from its current position.
                 player.play()
             }
         }
@@ -516,40 +591,54 @@ class AudioPlayerViewModel(
 
     fun seekTo(positionMs: Long) {
         val position = positionMs.coerceAtLeast(0L)
+
         exoPlayer?.seekTo(position)
+
         _uiState.update {
             it.copy(currentPositionMs = position)
         }
+
         savePlaybackState(positionOverride = position)
     }
 
     fun skipForward(seconds: Int = 10) {
         val player = exoPlayer ?: return
-        val newPosition = (player.currentPosition + seconds * 1000L)
-            .coerceAtMost(player.duration.coerceAtLeast(0L))
+
+        val newPosition =
+            (player.currentPosition + seconds * 1000L)
+                .coerceAtMost(player.duration.coerceAtLeast(0L))
 
         player.seekTo(newPosition)
+
         _uiState.update {
             it.copy(currentPositionMs = newPosition)
         }
+
         savePlaybackState(positionOverride = newPosition)
     }
 
     fun skipBackward(seconds: Int = 10) {
         val player = exoPlayer ?: return
-        val newPosition = (player.currentPosition - seconds * 1000L)
-            .coerceAtLeast(0L)
+
+        val newPosition =
+            (player.currentPosition - seconds * 1000L)
+                .coerceAtLeast(0L)
 
         player.seekTo(newPosition)
+
         _uiState.update {
             it.copy(currentPositionMs = newPosition)
         }
+
         savePlaybackState(positionOverride = newPosition)
     }
 
     fun playNext() {
         val currentNumber = _uiState.value.currentSurah.number
-        val nextNumber = if (currentNumber >= 114) 1 else currentNumber + 1
+
+        val nextNumber =
+            if (currentNumber >= 114) 1 else currentNumber + 1
+
         val nextSurah = QuranData.surahs.firstOrNull {
             it.number == nextNumber
         } ?: QuranData.surahs.first()
@@ -559,7 +648,10 @@ class AudioPlayerViewModel(
 
     fun playPrevious() {
         val currentNumber = _uiState.value.currentSurah.number
-        val previousNumber = if (currentNumber <= 1) 114 else currentNumber - 1
+
+        val previousNumber =
+            if (currentNumber <= 1) 114 else currentNumber - 1
+
         val previousSurah = QuranData.surahs.firstOrNull {
             it.number == previousNumber
         } ?: QuranData.surahs.last()
@@ -568,22 +660,24 @@ class AudioPlayerViewModel(
     }
 
     fun setReciter(reciter: Reciter) {
-        if (_uiState.value.currentReciter.id == reciter.id) return
-
-        _uiState.update {
-            it.copy(currentReciter = reciter)
+        if (_uiState.value.currentReciter.id == reciter.id) {
+            return
         }
 
-        savePlaybackState()
+        // playSurah saves the current position before switching reciters.
         playSurah(_uiState.value.currentSurah, reciter)
     }
 
     fun setPlaybackSpeed(speed: Float) {
+        if (speed !in 0.25f..3.0f) return
+
         _uiState.update {
             it.copy(playbackSpeed = speed)
         }
 
-        exoPlayer?.playbackParameters = PlaybackParameters(speed)
+        exoPlayer?.playbackParameters =
+            PlaybackParameters(speed)
+
         savePlaybackState()
     }
 
@@ -591,14 +685,22 @@ class AudioPlayerViewModel(
         _uiState.update {
             it.copy(isRepeatOne = !it.isRepeatOne)
         }
+
         savePlaybackState()
     }
 
     fun retry() {
         _uiState.update {
-            it.copy(errorMessage = null, isBuffering = true)
+            it.copy(
+                errorMessage = null,
+                isBuffering = true
+            )
         }
-        playSurah(_uiState.value.currentSurah, _uiState.value.currentReciter)
+
+        playSurah(
+            _uiState.value.currentSurah,
+            _uiState.value.currentReciter
+        )
     }
 
     fun setPlayerExpanded(expanded: Boolean) {
@@ -615,8 +717,11 @@ class AudioPlayerViewModel(
 
             while (isActive) {
                 exoPlayer?.let { player ->
-                    val position = player.currentPosition.coerceAtLeast(0L)
-                    val duration = player.duration.coerceAtLeast(0L)
+                    val position =
+                        player.currentPosition.coerceAtLeast(0L)
+
+                    val duration =
+                        player.duration.coerceAtLeast(0L)
 
                     _uiState.update {
                         it.copy(
@@ -629,9 +734,14 @@ class AudioPlayerViewModel(
                         )
                     }
 
-                    val now = android.os.SystemClock.elapsedRealtime()
+                    val now =
+                        android.os.SystemClock.elapsedRealtime()
+
                     if (now - lastSaveTime >= SAVE_INTERVAL_MS) {
-                        savePlaybackState(positionOverride = position)
+                        savePlaybackState(
+                            positionOverride = position
+                        )
+
                         lastSaveTime = now
                     }
                 }
@@ -654,12 +764,20 @@ class AudioPlayerViewModel(
 
     fun startSleepTimer(minutes: Int) {
         val context = getApplication<Application>()
-        com.example.timer.SleepTimerManager.startTimer(context, minutes)
+
+        com.example.timer.SleepTimerManager.startTimer(
+            context,
+            minutes
+        )
     }
 
     fun startSleepTimerSeconds(seconds: Long) {
         val context = getApplication<Application>()
-        com.example.timer.SleepTimerManager.startTimerWithSeconds(context, seconds)
+
+        com.example.timer.SleepTimerManager.startTimerWithSeconds(
+            context,
+            seconds
+        )
     }
 
     fun cancelSleepTimer() {
@@ -667,7 +785,6 @@ class AudioPlayerViewModel(
     }
 
     override fun onCleared() {
-        // Save the latest position before detaching the UI.
         savePlaybackState()
         stopProgressPolling()
         exoPlayer?.removeListener(playerListener)
