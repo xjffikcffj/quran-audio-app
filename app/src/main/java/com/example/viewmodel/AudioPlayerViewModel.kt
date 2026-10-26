@@ -474,11 +474,8 @@ class AudioPlayerViewModel(
 
         val targetReciter = reciter ?: _uiState.value.currentReciter
 
-        val audioUrl = if (reciter != null) {
-            targetReciter.getAudioUrlForSurah(surah.number)
-        } else {
-            surah.audioUrl
-        }
+        // Fix: always use the selected reciter's URL.
+        val audioUrl = targetReciter.getAudioUrlForSurah(surah.number)
 
         val startPosition =
             getSavedPositionForSurah(surah.number)
