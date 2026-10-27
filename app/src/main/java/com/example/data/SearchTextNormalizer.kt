@@ -1,11 +1,13 @@
+
 package com.example.data
 
 import java.text.Normalizer
 import java.util.Locale
 
 /**
- * Normalizes Arabic and Latin text so search is not defeated by Arabic
- * diacritics, tatweel, or common alef/ya variants.
+ * Normalizes Arabic and Latin text for reliable search.
+ * Handles diacritics, tatweel, common Arabic letter variants,
+ * Arabic-Indic digits, and Persian digits.
  */
 object SearchTextNormalizer {
 
@@ -18,6 +20,7 @@ object SearchTextNormalizer {
         return buildString(decomposed.length) {
             decomposed.forEach { character ->
                 val type = Character.getType(character)
+
                 if (
                     type == Character.NON_SPACING_MARK.toInt() ||
                     type == Character.COMBINING_SPACING_MARK.toInt() ||
@@ -29,6 +32,12 @@ object SearchTextNormalizer {
 
                 append(
                     when (character) {
+                        in '\u0660'..'\u0669' ->
+                            ('0'.code + character.code - '\u0660'.code).toChar()
+
+                        in '\u06F0'..'\u06F9' ->
+                            ('0'.code + character.code - '\u06F0'.code).toChar()
+
                         '\u0622', '\u0623', '\u0625', '\u0671' -> '\u0627'
                         '\u0649', '\u0626' -> '\u064a'
                         '\u0624' -> '\u0648'
