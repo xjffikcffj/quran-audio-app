@@ -1,12 +1,11 @@
+
 package com.example.ui.screens
 
 import android.app.Activity
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,9 +17,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -80,12 +79,9 @@ import com.example.ui.theme.AppThemeMode
 import com.example.ui.theme.CairoFontFamily
 import com.example.ui.theme.IslamicBorder
 import com.example.ui.theme.IslamicCard
-import com.example.ui.theme.IslamicCardHover
-import com.example.ui.theme.IslamicDarkBg
 import com.example.ui.theme.IslamicGold
 import com.example.ui.theme.IslamicGoldLight
 import com.example.ui.theme.IslamicTextMuted
-import com.example.ui.theme.IslamicTextPrimary
 import com.example.ui.theme.IslamicTextSecondary
 import com.example.ui.theme.ThemeManager
 import com.example.viewmodel.AudioPlayerViewModel
@@ -119,7 +115,6 @@ fun HomeScreen(
     var showThemeSheet by remember { mutableStateOf(false) }
     var showDeveloperDashboard by remember { mutableStateOf(false) }
 
-    // Normalize search text to support Arabic diacritics and letter variants.
     val queryClean = SearchTextNormalizer.normalize(searchQuery)
 
     val filteredSurahs = remember(queryClean, selectedFilter, favoriteSurahs) {
@@ -336,11 +331,14 @@ fun HomeScreen(
                         Spacer(modifier = Modifier.height(12.dp))
 
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             SurahFilter.values().forEach { filter ->
                                 val isSelected = filter == selectedFilter
+
                                 Box(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(20.dp))
@@ -352,7 +350,9 @@ fun HomeScreen(
                                             color = if (isSelected) IslamicGoldLight else IslamicBorder,
                                             shape = RoundedCornerShape(20.dp)
                                         )
-                                        .clickable { selectedFilter = filter }
+                                        .clickable {
+                                            selectedFilter = filter
+                                        }
                                         .padding(horizontal = 12.dp, vertical = 6.dp)
                                         .testTag("filter_${filter.name.lowercase()}"),
                                     contentAlignment = Alignment.Center
@@ -424,6 +424,7 @@ fun HomeScreen(
                     ) { surah ->
                         val isCurrent = surah.number == playerState.currentSurah.number
                         val isFav = favoriteSurahs.contains(surah.number)
+
                         SurahCard(
                             surah = surah,
                             isCurrent = isCurrent,
@@ -452,7 +453,9 @@ fun HomeScreen(
         }
 
         if (playerState.isPlayerExpanded) {
-            val isCurrentFav = favoriteSurahs.contains(playerState.currentSurah.number)
+            val isCurrentFav =
+                favoriteSurahs.contains(playerState.currentSurah.number)
+
             FullPlayerSheet(
                 state = playerState,
                 onDismiss = { viewModel.setPlayerExpanded(false) },
@@ -479,7 +482,9 @@ fun HomeScreen(
                 onOpenSleepTimer = { showSleepTimerSheet = true },
                 isFavorite = isCurrentFav,
                 onToggleFavorite = {
-                    FavoritesManager.toggleSurahFavorite(playerState.currentSurah.number)
+                    FavoritesManager.toggleSurahFavorite(
+                        playerState.currentSurah.number
+                    )
                 }
             )
         }
@@ -498,8 +503,12 @@ fun HomeScreen(
             SleepTimerBottomSheet(
                 isTimerActive = isTimerActive,
                 remainingSeconds = remainingSeconds,
-                onStartTimerMinutes = { minutes -> viewModel.startSleepTimer(minutes) },
-                onStartTimerSeconds = { seconds -> viewModel.startSleepTimerSeconds(seconds) },
+                onStartTimerMinutes = { minutes ->
+                    viewModel.startSleepTimer(minutes)
+                },
+                onStartTimerSeconds = { seconds ->
+                    viewModel.startSleepTimerSeconds(seconds)
+                },
                 onCancelTimer = { viewModel.cancelSleepTimer() },
                 onDismiss = { showSleepTimerSheet = false }
             )
