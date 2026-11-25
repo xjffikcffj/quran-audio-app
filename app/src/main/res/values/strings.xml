@@ -1,0 +1,19 @@
+<resources>
+    <string name="app_name">Quran Audio – قرآن صوتي</string>
+    <string name="search_hint">ابحث عن سورة بالاسم أو الرقم…</string>
+    <string name="all_surahs">جميع السور</string>
+    <string name="meccan">مكية</string>
+    <string name="medinan">مدنية</string>
+    <string name="now_playing">يتلو الآن</string>
+    <string name="choose_reciter">اختيار القارئ</string>
+    <string name="speed">السرعة</string>
+    <string name="repeat">تكرار</string>
+    <string name="play">تشغيل</string>
+    <string name="pause">إيقاف مؤقت</string>
+    <string name="next">السورة التالية</string>
+    <string name="previous">السورة السابقة</string>
+    <string name="error_network">تعذر تحميل التلاوة. يرجى التحقق من اتصال الإنترنت.</string>
+    <string name="retry">إعادة المحاولة</string>
+    <string name="notification_channel_name">تلاوة القرآن الكريم</string>
+    <string name="notification_channel_desc">إشعار التحكم في تشغيل الصوت في الخلفية</string>
+</resources>
