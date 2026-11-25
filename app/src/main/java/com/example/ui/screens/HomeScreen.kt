@@ -1,12 +1,11 @@
+
 package com.example.ui.screens
 
 import android.app.Activity
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,9 +17,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -65,6 +64,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ads.AdManager
 import com.example.data.FavoritesManager
 import com.example.data.QuranData
+import com.example.data.SearchTextNormalizer
 import com.example.model.Surah
 import com.example.ui.components.AdBannerView
 import com.example.ui.components.DeveloperDashboardDialog
@@ -79,12 +79,9 @@ import com.example.ui.theme.AppThemeMode
 import com.example.ui.theme.CairoFontFamily
 import com.example.ui.theme.IslamicBorder
 import com.example.ui.theme.IslamicCard
-import com.example.ui.theme.IslamicCardHover
-import com.example.ui.theme.IslamicDarkBg
 import com.example.ui.theme.IslamicGold
 import com.example.ui.theme.IslamicGoldLight
 import com.example.ui.theme.IslamicTextMuted
-import com.example.ui.theme.IslamicTextPrimary
 import com.example.ui.theme.IslamicTextSecondary
 import com.example.ui.theme.ThemeManager
 import com.example.viewmodel.AudioPlayerViewModel
@@ -118,8 +115,9 @@ fun HomeScreen(
     var showThemeSheet by remember { mutableStateOf(false) }
     var showDeveloperDashboard by remember { mutableStateOf(false) }
 
-    // Filter surahs based on query, revelation type, and favorites
-    val filteredSurahs = remember(searchQuery, selectedFilter, favoriteSurahs) {
+    val queryClean = SearchTextNormalizer.normalize(searchQuery)
+
+    val filteredSurahs = remember(queryClean, selectedFilter, favoriteSurahs) {
         QuranData.surahs.filter { surah ->
             val matchesFilter = when (selectedFilter) {
                 SurahFilter.ALL -> true
@@ -128,13 +126,12 @@ fun HomeScreen(
                 SurahFilter.MEDINAN -> !surah.isMeccan
             }
 
-            val queryClean = searchQuery.trim()
             val matchesQuery = if (queryClean.isEmpty()) {
                 true
             } else {
-                surah.nameArabic.contains(queryClean, ignoreCase = true) ||
-                        surah.nameEnglish.contains(queryClean, ignoreCase = true) ||
-                        surah.number.toString() == queryClean
+                SearchTextNormalizer.normalize(surah.nameArabic).contains(queryClean) ||
+                    SearchTextNormalizer.normalize(surah.nameEnglish).contains(queryClean) ||
+                    surah.number.toString() == queryClean
             }
 
             matchesFilter && matchesQuery
@@ -176,7 +173,6 @@ fun HomeScreen(
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                // Header item
                 item(key = "header") {
                     Column(modifier = Modifier.fillMaxWidth()) {
                         Row(
@@ -206,7 +202,6 @@ fun HomeScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                // Theme Mode Switcher
                                 IconButton(
                                     onClick = { showThemeSheet = true },
                                     modifier = Modifier
@@ -228,7 +223,6 @@ fun HomeScreen(
                                     )
                                 }
 
-                                // Developer Portal Button
                                 IconButton(
                                     onClick = { showDeveloperDashboard = true },
                                     modifier = Modifier
@@ -246,12 +240,15 @@ fun HomeScreen(
                                     )
                                 }
 
-                                // Quick Reciter Button
                                 Row(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(20.dp))
                                         .background(IslamicCard)
-                                        .border(1.dp, IslamicGold.copy(alpha = 0.5f), RoundedCornerShape(20.dp))
+                                        .border(
+                                            1.dp,
+                                            IslamicGold.copy(alpha = 0.5f),
+                                            RoundedCornerShape(20.dp)
+                                        )
                                         .clickable { showReciterSheet = true }
                                         .padding(horizontal = 8.dp, vertical = 6.dp)
                                         .testTag("reciter_quick_button"),
@@ -265,7 +262,8 @@ fun HomeScreen(
                                         modifier = Modifier.size(15.dp)
                                     )
                                     Text(
-                                        text = playerState.currentReciter.nameArabic.split(" ").firstOrNull() ?: "القارئ",
+                                        text = playerState.currentReciter.nameArabic
+                                            .split(" ").firstOrNull() ?: "القارئ",
                                         fontFamily = CairoFontFamily,
                                         fontSize = 11.sp,
                                         color = MaterialTheme.colorScheme.onSurface,
@@ -283,7 +281,6 @@ fun HomeScreen(
 
                         Spacer(modifier = Modifier.height(10.dp))
 
-                        // Fast Search Box
                         OutlinedTextField(
                             value = searchQuery,
                             onValueChange = { searchQuery = it },
@@ -333,13 +330,15 @@ fun HomeScreen(
 
                         Spacer(modifier = Modifier.height(12.dp))
 
-                        // Filter Chips (All, Favorites, Meccan, Medinan)
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             SurahFilter.values().forEach { filter ->
                                 val isSelected = filter == selectedFilter
+
                                 Box(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(20.dp))
@@ -351,7 +350,9 @@ fun HomeScreen(
                                             color = if (isSelected) IslamicGoldLight else IslamicBorder,
                                             shape = RoundedCornerShape(20.dp)
                                         )
-                                        .clickable { selectedFilter = filter }
+                                        .clickable {
+                                            selectedFilter = filter
+                                        }
                                         .padding(horizontal = 12.dp, vertical = 6.dp)
                                         .testTag("filter_${filter.name.lowercase()}"),
                                     contentAlignment = Alignment.Center
@@ -360,8 +361,16 @@ fun HomeScreen(
                                         text = filter.labelArabic,
                                         fontFamily = CairoFontFamily,
                                         fontSize = 12.sp,
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                        color = if (isSelected) Color(0xFF1B1400) else IslamicTextSecondary
+                                        fontWeight = if (isSelected) {
+                                            FontWeight.Bold
+                                        } else {
+                                            FontWeight.Normal
+                                        },
+                                        color = if (isSelected) {
+                                            Color(0xFF1B1400)
+                                        } else {
+                                            IslamicTextSecondary
+                                        }
                                     )
                                 }
                             }
@@ -371,7 +380,6 @@ fun HomeScreen(
                     }
                 }
 
-                // Empty state if search finds nothing or favorites list is empty
                 if (filteredSurahs.isEmpty()) {
                     item(key = "empty_state") {
                         Column(
@@ -382,16 +390,26 @@ fun HomeScreen(
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             Icon(
-                                imageVector = if (selectedFilter == SurahFilter.FAVORITES) Icons.Default.Star else Icons.Outlined.SearchOff,
+                                imageVector = if (selectedFilter == SurahFilter.FAVORITES) {
+                                    Icons.Default.Star
+                                } else {
+                                    Icons.Outlined.SearchOff
+                                },
                                 contentDescription = null,
-                                tint = if (selectedFilter == SurahFilter.FAVORITES) IslamicGold else IslamicTextMuted,
+                                tint = if (selectedFilter == SurahFilter.FAVORITES) {
+                                    IslamicGold
+                                } else {
+                                    IslamicTextMuted
+                                },
                                 modifier = Modifier.size(48.dp)
                             )
                             Text(
-                                text = if (selectedFilter == SurahFilter.FAVORITES)
-                                    "لم تقم بإضافة أي سورة إلى المفضلة بعد.\nاضغط على أيقونة النجمة ⭐ بجوار أي سورة لحفظها هنا والوصول إليها بسرعة."
-                                else
-                                    "لم يتم العثور على أي سورة مطابقة",
+                                text = if (selectedFilter == SurahFilter.FAVORITES) {
+                                    "لم تقم بإضافة أي سورة إلى المفضلة بعد.\n" +
+                                        "اضغط على أيقونة النجمة ⭐ بجوار أي سورة لحفظها هنا والوصول إليها بسرعة."
+                                } else {
+                                    "لم يتم العثور على أي سورة مطابقة"
+                                },
                                 fontFamily = CairoFontFamily,
                                 fontSize = 15.sp,
                                 color = IslamicTextSecondary,
@@ -406,12 +424,15 @@ fun HomeScreen(
                     ) { surah ->
                         val isCurrent = surah.number == playerState.currentSurah.number
                         val isFav = favoriteSurahs.contains(surah.number)
+
                         SurahCard(
                             surah = surah,
                             isCurrent = isCurrent,
                             isPlaying = isCurrent && playerState.isPlaying,
                             isFavorite = isFav,
-                            onToggleFavorite = { FavoritesManager.toggleSurahFavorite(surah.number) },
+                            onToggleFavorite = {
+                                FavoritesManager.toggleSurahFavorite(surah.number)
+                            },
                             onClick = {
                                 if (isCurrent) {
                                     viewModel.togglePlayPause()
@@ -431,9 +452,10 @@ fun HomeScreen(
             }
         }
 
-        // Full Player Modal
         if (playerState.isPlayerExpanded) {
-            val isCurrentFav = favoriteSurahs.contains(playerState.currentSurah.number)
+            val isCurrentFav =
+                favoriteSurahs.contains(playerState.currentSurah.number)
+
             FullPlayerSheet(
                 state = playerState,
                 onDismiss = { viewModel.setPlayerExpanded(false) },
@@ -459,11 +481,14 @@ fun HomeScreen(
                 remainingSeconds = remainingSeconds,
                 onOpenSleepTimer = { showSleepTimerSheet = true },
                 isFavorite = isCurrentFav,
-                onToggleFavorite = { FavoritesManager.toggleSurahFavorite(playerState.currentSurah.number) }
+                onToggleFavorite = {
+                    FavoritesManager.toggleSurahFavorite(
+                        playerState.currentSurah.number
+                    )
+                }
             )
         }
 
-        // Reciter Selection Sheet
         if (showReciterSheet) {
             ReciterSelectionBottomSheet(
                 selectedReciter = playerState.currentReciter,
@@ -474,19 +499,21 @@ fun HomeScreen(
             )
         }
 
-        // Sleep Timer Sheet
         if (showSleepTimerSheet) {
             SleepTimerBottomSheet(
                 isTimerActive = isTimerActive,
                 remainingSeconds = remainingSeconds,
-                onStartTimerMinutes = { minutes -> viewModel.startSleepTimer(minutes) },
-                onStartTimerSeconds = { seconds -> viewModel.startSleepTimerSeconds(seconds) },
+                onStartTimerMinutes = { minutes ->
+                    viewModel.startSleepTimer(minutes)
+                },
+                onStartTimerSeconds = { seconds ->
+                    viewModel.startSleepTimerSeconds(seconds)
+                },
                 onCancelTimer = { viewModel.cancelSleepTimer() },
                 onDismiss = { showSleepTimerSheet = false }
             )
         }
 
-        // Theme / Night Mode Settings Sheet
         if (showThemeSheet) {
             ThemeSettingsBottomSheet(
                 currentMode = themeMode,
@@ -498,7 +525,6 @@ fun HomeScreen(
             )
         }
 
-        // Developer Dashboard Dialog
         if (showDeveloperDashboard) {
             DeveloperDashboardDialog(
                 onDismiss = { showDeveloperDashboard = false }

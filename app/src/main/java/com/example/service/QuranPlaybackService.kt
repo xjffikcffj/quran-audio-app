@@ -4,23 +4,22 @@ package com.example.service
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ServiceInfo
-import android.os.Build
 import android.util.Log
-import androidx.core.app.NotificationCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
-import androidx.media3.session.MediaStyleNotificationHelper
 import com.example.MainActivity
 import com.example.QuranApp
 import com.example.R
+import com.example.timer.SleepTimerManager
 
 @UnstableApi
 class QuranPlaybackService : MediaSessionService() {
@@ -37,6 +36,8 @@ class QuranPlaybackService : MediaSessionService() {
         const val ACTION_PAUSE =
             "com.example.quranaudio.action.PAUSE"
 
+        private const val TIMER_MARKER = " • متبقي "
+
         @Volatile
         private var sharedPlayer: ExoPlayer? = null
 
@@ -46,7 +47,7 @@ class QuranPlaybackService : MediaSessionService() {
         @Synchronized
         fun getSharedPlayer(context: Context): ExoPlayer {
             if (sharedPlayer == null) {
-                Log.d(TAG, "Creating new singleton ExoPlayer instance")
+                Log.d(TAG, "Creating shared ExoPlayer")
 
                 val appContext = context.applicationContext
 
@@ -62,64 +63,82 @@ class QuranPlaybackService : MediaSessionService() {
                     .build()
             }
 
-            return sharedPlayer!!
+            return checkNotNull(sharedPlayer)
         }
 
         @Synchronized
         fun getSharedSession(context: Context): MediaSession {
-            if (sharedMediaSession == null) {
-                val appContext = context.applicationContext
-                val player = getSharedPlayer(appContext)
+            sharedMediaSession?.let { return it }
 
-                val sessionActivityIntent =
-                    Intent(appContext, MainActivity::class.java).apply {
-                        flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
-                    }
+            val appContext = context.applicationContext
+            val player = getSharedPlayer(appContext)
 
-                val pendingIntent = PendingIntent.getActivity(
-                    appContext,
-                    0,
-                    sessionActivityIntent,
-                    PendingIntent.FLAG_IMMUTABLE or
-                        PendingIntent.FLAG_UPDATE_CURRENT
-                )
-
-                sharedMediaSession = try {
-                    Log.d(TAG, "Building shared MediaSession")
-
-                    MediaSession.Builder(appContext, player)
-                        .setId("QuranAudioSession_${System.nanoTime()}")
-                        .setSessionActivity(pendingIntent)
-                        .build()
-                } catch (e: Exception) {
-                    Log.e(
-                        TAG,
-                        "Error building MediaSession: ${e.message}",
-                        e
-                    )
-                    null
+            val sessionActivityIntent =
+                Intent(appContext, MainActivity::class.java).apply {
+                    flags =
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP
                 }
-            }
 
-            return sharedMediaSession
-                ?: MediaSession.Builder(
-                    context.applicationContext,
-                    getSharedPlayer(context)
-                )
-                    .setId("QuranAudioFallback_${System.nanoTime()}")
-                    .build()
+            val pendingIntent = PendingIntent.getActivity(
+                appContext,
+                0,
+                sessionActivityIntent,
+                PendingIntent.FLAG_IMMUTABLE or
+                    PendingIntent.FLAG_UPDATE_CURRENT
+            )
+
+            val session = MediaSession.Builder(appContext, player)
+                .setId("QuranAudioSession")
+                .setSessionActivity(pendingIntent)
+                .build()
+
+            sharedMediaSession = session
+            return session
         }
 
+        @Synchronized
         fun releaseSharedEngine() {
-            Log.d(TAG, "Explicitly releasing shared engine")
+            Log.d(TAG, "Releasing shared playback engine")
 
-            sharedMediaSession?.run {
-                player.release()
-                release()
-            }
-
+            sharedMediaSession?.release()
             sharedMediaSession = null
+
+            sharedPlayer?.release()
             sharedPlayer = null
+        }
+    }
+
+    private val timerNotificationProvider:
+        DefaultMediaNotificationProvider by lazy {
+        object : DefaultMediaNotificationProvider(
+            this,
+            DefaultMediaNotificationProvider.NotificationIdProvider {
+                NOTIFICATION_ID
+            },
+            QuranApp.PLAYBACK_CHANNEL_ID,
+            R.string.app_name
+        ) {
+            override fun getNotificationContentText(
+                metadata: MediaMetadata
+            ): CharSequence? {
+                val artist = metadata.artist
+                    ?.toString()
+                    ?.substringBefore(TIMER_MARKER)
+                    ?.takeIf { it.isNotBlank() }
+                    ?: "تلاوة القرآن الكريم"
+
+                return if (SleepTimerManager.isTimerActive.value) {
+                    artist + TIMER_MARKER +
+                        SleepTimerManager.formatTime(
+                            SleepTimerManager.remainingSeconds.value
+                        )
+                } else {
+                    artist
+                }
+            }
+        }.apply {
+            setSmallIcon(R.mipmap.ic_launcher)
         }
     }
 
@@ -127,81 +146,47 @@ class QuranPlaybackService : MediaSessionService() {
         object : Player.Listener {
 
             override fun onPlaybackStateChanged(playbackState: Int) {
-                val stateName = when (playbackState) {
-                    Player.STATE_IDLE -> "STATE_IDLE"
-                    Player.STATE_BUFFERING -> "STATE_BUFFERING"
-                    Player.STATE_READY -> "STATE_READY"
-                    Player.STATE_ENDED -> "STATE_ENDED"
-                    else -> "UNKNOWN($playbackState)"
-                }
-
                 Log.i(
                     TAG,
-                    "[PlaybackDiagnostics] State changed: " +
-                        "$stateName, " +
+                    "Playback state=$playbackState, " +
                         "playWhenReady=${sharedPlayer?.playWhenReady}"
                 )
-
-                if (playbackState == Player.STATE_ENDED) {
-                    Log.i(TAG, "[PlaybackDiagnostics] Playback ended")
-                }
-
-                updateCurrentNotification()
             }
 
             override fun onPlayWhenReadyChanged(
                 playWhenReady: Boolean,
                 reason: Int
             ) {
-                Log.i(
-                    TAG,
-                    "[PlaybackDiagnostics] playWhenReady changed: " +
-                        "$playWhenReady"
-                )
+                Log.i(TAG, "playWhenReady=$playWhenReady")
 
-                updateCurrentNotification()
+                if (playWhenReady) {
+                    SleepTimerManager.resumeTimer()
+                } else {
+                    SleepTimerManager.pauseTimer()
+                }
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
-                Log.i(
-                    TAG,
-                    "[PlaybackDiagnostics] isPlaying changed: $isPlaying"
-                )
-
-                updateCurrentNotification()
+                Log.i(TAG, "isPlaying=$isPlaying")
             }
 
             override fun onMediaItemTransition(
                 mediaItem: MediaItem?,
                 reason: Int
             ) {
-                val title = mediaItem
-                    ?.mediaMetadata
-                    ?.title
-                    ?.toString()
-                    ?: "القرآن الكريم"
-
                 Log.i(
                     TAG,
-                    "[PlaybackDiagnostics] Transition to: " +
-                        "$title (reason=$reason)"
+                    "Media transition: " +
+                        (mediaItem?.mediaMetadata?.title
+                            ?: "القرآن الكريم")
                 )
-
-                updateCurrentNotification()
             }
 
             override fun onPlayerError(error: PlaybackException) {
                 Log.e(
                     TAG,
-                    "[PlaybackDiagnostics] Player error: " +
-                        "${error.errorCodeName} (${error.errorCode})",
+                    "Player error: ${error.errorCodeName}",
                     error
-                )
-
-                Log.e(
-                    TAG,
-                    "[PlaybackDiagnostics] Underlying cause: " +
-                        "${error.cause?.message}"
                 )
             }
         }
@@ -211,8 +196,15 @@ class QuranPlaybackService : MediaSessionService() {
 
         Log.i(TAG, "QuranPlaybackService onCreate")
 
+        setMediaNotificationProvider(timerNotificationProvider)
+
         val session = getSharedSession(this)
         mediaSession = session
+
+        if (!isSessionAdded(session)) {
+            addSession(session)
+        }
+
         session.player.addListener(servicePlayerListener)
     }
 
@@ -221,11 +213,9 @@ class QuranPlaybackService : MediaSessionService() {
         flags: Int,
         startId: Int
     ): Int {
-        Log.i(
-            TAG,
-            "QuranPlaybackService onStartCommand (startId=$startId)"
-        )
+        Log.i(TAG, "onStartCommand startId=$startId")
 
+        val result = super.onStartCommand(intent, flags, startId)
         val player = sharedPlayer
 
         when (intent?.action) {
@@ -234,132 +224,16 @@ class QuranPlaybackService : MediaSessionService() {
                     if (player.playbackState == Player.STATE_ENDED) {
                         player.seekTo(0)
                     }
-
                     player.play()
                 }
-
-                updateCurrentNotification()
-                return START_STICKY
             }
 
             ACTION_PAUSE -> {
                 player?.pause()
-                updateCurrentNotification()
-                return START_STICKY
             }
         }
 
-        updateCurrentNotification()
-        return START_STICKY
-    }
-
-    private fun updateCurrentNotification() {
-        try {
-            val player = sharedPlayer ?: return
-
-            val title = player.currentMediaItem
-                ?.mediaMetadata
-                ?.title
-                ?.toString()
-                ?: getString(R.string.app_name)
-
-            val artist = player.currentMediaItem
-                ?.mediaMetadata
-                ?.artist
-                ?.toString()
-                ?: "تلاوة القرآن الكريم"
-
-            val shouldShowPause =
-                player.playWhenReady &&
-                    player.playbackState != Player.STATE_ENDED
-
-            val sessionActivityIntent =
-                Intent(this, MainActivity::class.java).apply {
-                    flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
-                }
-
-            val pendingIntent = PendingIntent.getActivity(
-                this,
-                0,
-                sessionActivityIntent,
-                PendingIntent.FLAG_IMMUTABLE or
-                    PendingIntent.FLAG_UPDATE_CURRENT
-            )
-
-            val actionIntent = Intent(
-                this,
-                QuranPlaybackService::class.java
-            ).apply {
-                action = if (shouldShowPause) {
-                    ACTION_PAUSE
-                } else {
-                    ACTION_PLAY
-                }
-            }
-
-            val actionPendingIntent = PendingIntent.getService(
-                this,
-                if (shouldShowPause) 1 else 2,
-                actionIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or
-                    PendingIntent.FLAG_IMMUTABLE
-            )
-
-            val builder = NotificationCompat.Builder(
-                this,
-                QuranApp.PLAYBACK_CHANNEL_ID
-            )
-                .setContentTitle(title)
-                .setContentText(artist)
-                .setSmallIcon(R.mipmap.ic_launcher)
-                .setContentIntent(pendingIntent)
-                .setOngoing(shouldShowPause)
-                .setPriority(NotificationCompat.PRIORITY_LOW)
-                .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
-                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-                .addAction(
-                    if (shouldShowPause) {
-                        android.R.drawable.ic_media_pause
-                    } else {
-                        android.R.drawable.ic_media_play
-                    },
-                    if (shouldShowPause) {
-                        "إيقاف مؤقت"
-                    } else {
-                        "تشغيل"
-                    },
-                    actionPendingIntent
-                )
-
-            // ربط الإشعار بجلسة الوسائط لدعم عرض التحكم على شاشة القفل.
-            mediaSession?.let { session ->
-                builder.setStyle(
-                    MediaStyleNotificationHelper.MediaStyle(session)
-                        .setShowActionsInCompactView(0)
-                )
-            }
-
-            val notification = builder.build()
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(
-                    NOTIFICATION_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-                )
-            } else {
-                startForeground(
-                    NOTIFICATION_ID,
-                    notification
-                )
-            }
-        } catch (e: Exception) {
-            Log.w(
-                TAG,
-                "Notification update skipped: ${e.message}",
-                e
-            )
-        }
+        return result
     }
 
     override fun onGetSession(
@@ -375,20 +249,10 @@ class QuranPlaybackService : MediaSessionService() {
             player?.isPlaying == true ||
                 player?.playWhenReady == true
 
-        Log.i(
-            TAG,
-            "QuranPlaybackService onTaskRemoved: " +
-                "isStillPlaying=$isStillPlaying"
-        )
+        Log.i(TAG, "onTaskRemoved isStillPlaying=$isStillPlaying")
 
         if (!isStillPlaying) {
-            Log.i(
-                TAG,
-                "Stopping service because playback is not active"
-            )
             stopSelf()
-        } else {
-            Log.i(TAG, "Preserving foreground service")
         }
     }
 

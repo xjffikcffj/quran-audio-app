@@ -11,73 +11,105 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import java.util.Locale
 
 object SleepTimerManager {
     private const val TAG = "SleepTimerManager"
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val scope =
+        CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
     private var timerJob: Job? = null
-    private var remainingTimeMs = 0L
-    private var timerStartedAtMs = 0L
-    private var timerPaused = false
     private var appContext: Context? = null
 
+    private var remainingTimeMs = 0L
+    private var segmentStartTimeMs = 0L
+    private var timerPaused = false
+
     private val _isTimerActive = MutableStateFlow(false)
-    val isTimerActive: StateFlow<Boolean> = _isTimerActive.asStateFlow()
+    val isTimerActive: StateFlow<Boolean> =
+        _isTimerActive.asStateFlow()
 
     private val _remainingSeconds = MutableStateFlow(0L)
-    val remainingSeconds: StateFlow<Long> = _remainingSeconds.asStateFlow()
+    val remainingSeconds: StateFlow<Long> =
+        _remainingSeconds.asStateFlow()
 
     fun formatTime(totalSeconds: Long): String {
         val minutes = totalSeconds / 60
         val seconds = totalSeconds % 60
-        return String.format(Locale.US, "%02d:%02d", minutes, seconds)
+        return String.format(
+            Locale.US,
+            "%02d:%02d",
+            minutes,
+            seconds
+        )
     }
 
     fun startTimer(context: Context, minutes: Int) {
-        startTimerWithSeconds(context, minutes.coerceAtLeast(0) * 60L)
+        startTimerWithSeconds(
+            context,
+            minutes.coerceAtLeast(0) * 60L
+        )
     }
 
-    fun startTimerWithSeconds(context: Context, seconds: Long) {
+    fun startTimerWithSeconds(
+        context: Context,
+        seconds: Long
+    ) {
         cancelTimer()
 
         if (seconds <= 0L) return
 
         appContext = context.applicationContext
         remainingTimeMs = seconds * 1000L
-        timerStartedAtMs = System.currentTimeMillis()
+
         timerPaused = try {
-            !QuranPlaybackService.getSharedPlayer(appContext!!).playWhenReady
+            !QuranPlaybackService
+                .getSharedPlayer(appContext!!)
+                .playWhenReady
         } catch (e: Exception) {
-            Log.w(TAG, "Could not read playback state: ${e.message}")
+            Log.w(TAG, "Could not read player state: ${e.message}")
             false
         }
 
         _isTimerActive.value = true
         _remainingSeconds.value = seconds
 
-        Log.i(TAG, "Sleep timer started: $seconds seconds; paused=$timerPaused")
+        Log.i(
+            TAG,
+            "Timer started: $seconds seconds; paused=$timerPaused"
+        )
 
-        if (!timerPaused) startCountdown()
+        if (!timerPaused) {
+            startCountdown()
+        }
     }
 
     fun pauseTimer() {
         if (!_isTimerActive.value || timerPaused) return
 
-        val elapsed = System.currentTimeMillis() - timerStartedAtMs
-        remainingTimeMs = (remainingTimeMs - elapsed).coerceAtLeast(0L)
-        _remainingSeconds.value = (remainingTimeMs + 999L) / 1000L
+        val elapsed =
+            System.currentTimeMillis() - segmentStartTimeMs
+
+        remainingTimeMs =
+            (remainingTimeMs - elapsed).coerceAtLeast(0L)
+
+        _remainingSeconds.value =
+            (remainingTimeMs + 999L) / 1000L
+
         timerPaused = true
 
         timerJob?.cancel()
         timerJob = null
 
-        Log.i(TAG, "Sleep timer paused with ${_remainingSeconds.value} seconds remaining")
+        Log.i(
+            TAG,
+            "Timer paused: ${_remainingSeconds.value} seconds left"
+        )
     }
 
     fun resumeTimer() {
@@ -89,22 +121,31 @@ object SleepTimerManager {
         }
 
         timerPaused = false
-        timerStartedAtMs = System.currentTimeMillis()
 
-        Log.i(TAG, "Sleep timer resumed")
+        Log.i(TAG, "Timer resumed")
+
         startCountdown()
     }
 
     private fun startCountdown() {
         timerJob?.cancel()
-        timerStartedAtMs = System.currentTimeMillis()
+
+        segmentStartTimeMs = System.currentTimeMillis()
 
         timerJob = scope.launch {
-            while (isActive && _isTimerActive.value && !timerPaused) {
-                val elapsed = System.currentTimeMillis() - timerStartedAtMs
-                val remaining = (remainingTimeMs - elapsed).coerceAtLeast(0L)
+            while (
+                isActive &&
+                _isTimerActive.value &&
+                !timerPaused
+            ) {
+                val elapsed =
+                    System.currentTimeMillis() - segmentStartTimeMs
 
-                _remainingSeconds.value = (remaining + 999L) / 1000L
+                val remaining =
+                    (remainingTimeMs - elapsed).coerceAtLeast(0L)
+
+                _remainingSeconds.value =
+                    (remaining + 999L) / 1000L
 
                 if (remaining <= 0L) {
                     finishTimer()
@@ -119,14 +160,23 @@ object SleepTimerManager {
     private fun finishTimer() {
         if (!_isTimerActive.value) return
 
-        Log.i(TAG, "Sleep timer finished; pausing Quran playback")
+        Log.i(TAG, "Timer finished; pausing Quran playback")
+
+        remainingTimeMs = 0L
+        _remainingSeconds.value = 0L
 
         try {
             appContext?.let { context ->
-                QuranPlaybackService.getSharedPlayer(context).pause()
+                QuranPlaybackService
+                    .getSharedPlayer(context)
+                    .pause()
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to pause playback: ${e.message}", e)
+            Log.e(
+                TAG,
+                "Failed to pause playback: ${e.message}",
+                e
+            )
         }
 
         cancelTimer()
@@ -139,10 +189,12 @@ object SleepTimerManager {
 
         timerJob?.cancel()
         timerJob = null
+
         remainingTimeMs = 0L
-        timerStartedAtMs = 0L
+        segmentStartTimeMs = 0L
         timerPaused = false
         appContext = null
+
         _isTimerActive.value = false
         _remainingSeconds.value = 0L
     }
